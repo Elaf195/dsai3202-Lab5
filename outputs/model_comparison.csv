@@ -1,5 +1,5 @@
 Model,RMSE (mean),RMSE (std),MAE (mean),R2 (mean),Time (s)
-RandomForest,0.0001,0.0,0.0001,0.8701,3.16
-GradientBoosting,0.0001,0.0,0.0001,0.8573,2.35
-XGBoost,0.0002,0.0,0.0001,0.7552,0.34
-LightGBM,0.0001,0.0,0.0001,0.8565,0.4
+RandomForest,0.0,0.0,0.0,1.0,2.9
+GradientBoosting,0.0,0.0,0.0,1.0,0.84
+XGBoost,0.0,0.0,0.0,1.0,0.32
+LightGBM,0.0,0.0,0.0,1.0,0.15

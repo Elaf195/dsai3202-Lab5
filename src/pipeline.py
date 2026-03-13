@@ -1,71 +1,82 @@
-"""
-End-to-end pipeline for Lab 5.
-Run: python src/pipeline.py
-"""
-import time, os, pandas as pd
-from preprocess import preprocess_pipeline
-from feature_extraction import extract_tsfresh_features, filter_features_with_tsfresh
-from filter_selection import run_filter_pipeline
-from genetic_algorithm import run_ga, plot_ga_convergence
-from model import run_all_models, train_best_model, MODELS
+import sys
+import os
 
-# Ensure directories exist
-os.makedirs('data', exist_ok=True)
-os.makedirs('outputs', exist_ok=True)
+# fixes imports and Windows multiprocessing
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-PIPELINE_START = time.time()
+import multiprocessing
+multiprocessing.freeze_support()
 
-# Step 1: Preprocess 
-print('\n[1/6] Preprocessing...')
-train_df, test_df, rul_df = preprocess_pipeline('data/', subset='FD001')
+import time
+import pandas as pd
 
-# Identify sensor columns
-sensor_cols = [c for c in train_df.columns 
-              if c.startswith('s') and c != 'engine_id']
 
-# Build RUL target indexed by engine_id (using the initial RUL for the series)
-rul_target = (train_df.sort_values('cycle')
-              .groupby('engine_id')['RUL'].first())
+def main():
+    from preprocess         import preprocess_pipeline
+    from feature_extraction import extract_or_load, filter_features_with_tsfresh
+    from filter_selection   import run_filter_pipeline
+    from genetic_algorithm  import run_ga, plot_ga_convergence
+    from model              import run_all_models, train_best_model, MODELS
 
-# Step 2: tsfresh Extraction
-print('\n[2/6] tsfresh feature extraction...')
-# Note: n_jobs=1 is safer for some environments, but -1 uses all cores
-features_raw = extract_tsfresh_features(train_df, sensor_cols, n_jobs=1)
+    os.makedirs('data',    exist_ok=True)
+    os.makedirs('outputs', exist_ok=True)
 
-# Align features with target
-features_raw = features_raw.loc[rul_target.index]
-features_raw.to_csv('data/features_tsfresh.csv')
+    PIPELINE_START = time.time()
 
-# Step 3: tsfresh built-in filter 
-print('\n[3/6] tsfresh relevance filter...')
-features_ts = filter_features_with_tsfresh(features_raw, rul_target)
+    # Step 1: Preprocess 
+    print('\n[1/5] Preprocessing...')
+    train_df, test_df, rul_df = preprocess_pipeline('data/', subset='FD001')
+    train_df['engine_id'] = train_df['engine_id'].astype(float).astype(int)
 
-# Step 4: Filter methods 
-print('\n[4/6] Filter-based selection (Var + Corr + MI)...')
-features_filtered, mi_scores = run_filter_pipeline(
-    features_ts, rul_target, top_k=80
-)
-features_filtered.to_csv('data/features_filtered.csv')
+    sensor_cols = [c for c in train_df.columns
+                   if c.startswith('s') and c != 'engine_id']
 
-# Step 5: Genetic Algorithm 
-print('\n[5/6] Genetic Algorithm feature selection...')
-sel_df, best, log, sel_cols = run_ga(features_filtered, rul_target)
-sel_df.to_csv('data/features_ga_selected.csv')
-plot_ga_convergence(log, save_path='outputs/ga_convergence.png')
+    rul_target = (train_df.sort_values('cycle')
+                          .groupby('engine_id')['RUL'].first())
+    rul_target.index = rul_target.index.astype(int)
+    print(f'Engines: {len(rul_target)} | Sensors: {len(sensor_cols)}')
 
-# Step 6: Model Training & Evaluation
-print('\n[6/6] Model Training & Evaluation...')
-# Ensure final alignment
-sel_df = sel_df.loc[rul_target.index]
-results_df = run_all_models(sel_df, rul_target)
+    # Step 2: Feature Extraction
+    print('\n[2/5] Feature extraction...')
+    features_raw = extract_or_load(train_df, sensor_cols)
+    common       = features_raw.index.intersection(rul_target.index)
+    features_raw = features_raw.loc[common]
+    rul_target   = rul_target.loc[common]
+    print(f'Features shape: {features_raw.shape}')
 
-results_df.to_csv('outputs/model_comparison.csv', index=False)
+    # Step 3: Relevance filter (MI-based, no multiprocessing) 
+    print('\n[3/5] Relevance filter...')
+    features_ts = filter_features_with_tsfresh(features_raw, rul_target)
+    features_ts.to_csv('data/features_tsfresh_filtered.csv')
 
-# Train best model (e.g. XGBoost) on full data
-train_best_model(MODELS['XGBoost'], sel_df.values, rul_target.values, 
-                save_path='outputs/best_model.pkl')
+    # Step 4: Filter methods (Var + Corr + MI) 
+    print('\n[4/5] Filter-based selection...')
+    features_filtered, mi_scores = run_filter_pipeline(
+        features_ts, rul_target, top_k=80
+    )
+    features_filtered.to_csv('data/features_filtered.csv')
+    print(f'After filters: {features_filtered.shape[1]} features')
 
-total = time.time() - PIPELINE_START
-print(f'\n=== PIPELINE COMPLETE in {total:.1f}s ===')
-print(f'Features after GA: {sel_df.shape[1]}')
-print(results_df.to_string(index=False))
+    # Step 5: Genetic Algorithm 
+    print('\n[5/5] Genetic Algorithm...')
+    sel_df, best, log, sel_cols = run_ga(features_filtered, rul_target)
+    sel_df.to_csv('data/features_ga_selected.csv')
+    plot_ga_convergence(log, save_path='outputs/ga_convergence.png')
+    print(f'GA selected: {sel_df.shape[1]} features')
+
+    # Step 6: Model Training & Evaluation 
+    print('\n[6/6] Model Training & Evaluation...')
+    results_df = run_all_models(sel_df, rul_target)
+    results_df.to_csv('outputs/model_comparison.csv', index=False)
+    train_best_model(MODELS['XGBoost'], sel_df.values, rul_target.values)
+
+    total = time.time() - PIPELINE_START
+    print(f'\n{"="*50}')
+    print(f'PIPELINE COMPLETE in {total:.1f}s')
+    print(f'Final feature count: {sel_df.shape[1]}')
+    print(f'{"="*50}')
+    print(results_df.to_string(index=False))
+
+
+if __name__ == '__main__':
+    main()
